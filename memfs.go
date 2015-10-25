@@ -240,7 +240,6 @@ func (node *MemNode) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse
 var _ fs.HandleReadDirAller = (*MemNode)(nil)
 
 func (node *MemNode) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
-	fmt.Printf("ReadDirAll %s\n", node.name)
 	out := make([]fuse.Dirent, 0)
 	dot := fuse.Dirent{Inode: node.inode, Type: fuse.DT_Dir, Name: "."}
 	out = append(out, dot)
@@ -260,19 +259,16 @@ func (node *MemNode) ReadDirAll(ctx context.Context) ([]fuse.Dirent, error) {
 			item.Type = fuse.DT_File
 		}
 		item.Name = n.name
-		fmt.Printf("%s\n", n.name)
 		out = append(out, item)
 	}
 	return out, nil
 }
 
 func (node *MemNode) Rename(ctx context.Context, req *fuse.RenameRequest, newDir fs.Node) error {
-	fmt.Printf("Rename on %s to %s\n", node, newDir)
 	item := node.find(req.OldName)
 	item.name = req.NewName
 	if newMemDir, ok := newDir.(*MemNode); ok {
 		if(node.inode != newMemDir.inode) {
-			fmt.Printf("Removing and adding\n")
 			node.remove(item)
 			newMemDir.add(item)
 		}
@@ -298,7 +294,6 @@ func (node *MemNode) Setattr(ctx context.Context, req *fuse.SetattrRequest, resp
 		node.gid = req.Gid
 	}
 	if req.Valid.Size() {
-		fmt.Printf("%s needs to change size to %d\n", node, req.Size)
 		node.changeSize(int(req.Size))
 	}
 	return nil
