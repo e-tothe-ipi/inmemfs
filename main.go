@@ -73,8 +73,15 @@ func (node *inMemNode) OnUnmount() {
 
 }
 
-func (node *inMemNode) Lookup(out *fuse.Attr, name string, context *fuse.Context) (*nodefs.Inode, fuse.Status) {
-	return nil, fuse.ENOSYS
+func (parent *inMemNode) Lookup(out *fuse.Attr, name string, context *fuse.Context) (*nodefs.Inode, fuse.Status) {
+	child := parent.inode.GetChild(name)
+	if child != nil {
+		if inMemChild, success := child.Node().(*inMemNode); success {
+			*out = inMemChild.attr
+		}
+		return child, fuse.OK
+	}
+	return nil, fuse.ENOENT
 }
 
 func (node *inMemNode) Deletable() bool {
@@ -97,8 +104,11 @@ func (node *inMemNode) Mknod(name string, mode uint32, dev uint32, context *fuse
 	return nil, fuse.ENOSYS
 }
 
-func (node *inMemNode) Mkdir(name string, mode uint32, context *fuse.Context) (newNode *nodefs.Inode, code fuse.Status) {
-	return nil, fuse.ENOSYS
+func (parent *inMemNode) Mkdir(name string, mode uint32, context *fuse.Context) (newNode *nodefs.Inode, code fuse.Status) {
+	node := parent.fs.createNode()
+	node.attr.Mode = mode | fuse.S_IFDIR
+	inode := parent.inode.NewChild(name, true, node)
+	return inode, fuse.OK
 }
 
 func (node *inMemNode) Unlink(name string, context *fuse.Context) (code fuse.Status) {
@@ -130,7 +140,14 @@ func (node *inMemNode) Open(flags uint32, context *fuse.Context) (file nodefs.Fi
 }
 
 func (node *inMemNode) OpenDir(context *fuse.Context) ([]fuse.DirEntry, fuse.Status) {
-	return make([]fuse.DirEntry, 0), fuse.OK
+	children := node.inode.FsChildren()
+	ls := make([]fuse.DirEntry, 0, len(children))
+	for name, inode := range children {
+		if childNode, err := inode.Node().(*inMemNode); err {
+			ls = append(ls, fuse.DirEntry{Name: name, Mode: childNode.attr.Mode})
+		}
+	}
+	return ls, fuse.OK
 }
 
 func (node *inMemNode) Read(file nodefs.File, dest []byte, off int64, context *fuse.Context) (fuse.ReadResult, fuse.Status) {
