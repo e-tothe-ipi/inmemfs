@@ -36,15 +36,17 @@ func main() {
 }
 
 func newInMemFS() *inMemFS {
-	out := &inMemFS{}
-	out.root = out.createNode()
-	out.root.attr.Mode = fuse.S_IFDIR | 0755
-	out.root.attr.Nlink = 2
-	return out
+	fs := &inMemFS{}
+	fs.root = fs.createNode()
+	fs.root.attr.Mode = fuse.S_IFDIR | 0755
+	fs.root.attr.Nlink = 2
+	fs.blockSize = 4096
+	return fs
 }
 
 type inMemFS struct {
 	root *inMemNode
+	blockSize uint32
 }
 
 func (fs *inMemFS) createNode() *inMemNode {
@@ -52,6 +54,8 @@ func (fs *inMemFS) createNode() *inMemNode {
 	now := time.Now()
 	node.attr.SetTimes(&now, &now, &now)
 	node.attr.Nlink = 1
+	node.attr.Blksize = fs.blockSize
+	node.contents = make([]byte, 0)
 	return node
 }
 
@@ -61,6 +65,7 @@ type inMemNode struct {
 	metadataMutex sync.RWMutex
 	attr fuse.Attr
 	xattr map[string][]byte
+	contents []byte
 }
 
 func (node *inMemNode) incrementLinks() {
@@ -109,7 +114,7 @@ func (node *inMemNode) Deletable() bool {
 }
 
 func (node *inMemNode) OnForget() {
-
+	node.setSize(0)
 }
 
 func (node *inMemNode) Access(mode uint32, context *fuse.Context) (code fuse.Status) {
@@ -192,12 +197,17 @@ func (parent *inMemNode) Create(name string, flags uint32, mode uint32, context 
 	node.attr.Mode = mode | fuse.S_IFREG
 	parent.Inode().NewChild(name, false, node)
 	parent.incrementLinks()
-	f := node.createFile()
+	f, openStatus := node.Open(flags, context)
+	if openStatus != fuse.OK {
+		return nil, nil, openStatus
+	}
 	return f, node.Inode(), fuse.OK
 }
 
 func (node *inMemNode) Open(flags uint32, context *fuse.Context) (file nodefs.File, code fuse.Status) {
-	return nil, fuse.ENOSYS
+	f := node.createFile()
+	f.flags = flags
+	return f, fuse.OK
 }
 
 func (node *inMemNode) OpenDir(context *fuse.Context) ([]fuse.DirEntry, fuse.Status) {
@@ -214,10 +224,38 @@ func (node *inMemNode) OpenDir(context *fuse.Context) ([]fuse.DirEntry, fuse.Sta
 }
 
 func (node *inMemNode) Read(file nodefs.File, dest []byte, off int64, context *fuse.Context) (fuse.ReadResult, fuse.Status) {
-	return nil, fuse.ENOSYS
+	if int(off) > len(node.contents) {
+		return nil, fuse.EIO
+	}
+	if len(dest) > len(node.contents) - int(off) {
+		dest = dest[:len(node.contents) - int(off)]
+	}
+	copy(dest, node.contents[off:])
+	return fuse.ReadResultData(dest), fuse.OK
+}
+
+func (node *inMemNode) setSize(size int) {
+	newContents := make([]byte, size)
+	if len(node.contents) > size {
+		copy(newContents, node.contents[:size])
+	} else {
+		copy(newContents, node.contents)
+	}
+	node.metadataMutex.Lock()
+	node.contents = newContents
+	node.attr.Size = uint64(size)
+	node.attr.Blocks = uint64(size / 512)
+	if size % 512 > 0 {
+		node.attr.Blocks += 1
+	}
+	node.metadataMutex.Unlock()
 }
 
 func (node *inMemNode) Write(file nodefs.File, data []byte, off int64, context *fuse.Context) (written uint32, code fuse.Status) {
+	if len(node.contents) < len(data) + int(off) {
+		node.setSize(len(data) + int(off))
+	}
+	copy(node.contents[off:], data)
 	return uint32(len(data)), fuse.OK
 }
 
@@ -289,6 +327,7 @@ func (node *inMemNode) Chown(file nodefs.File, uid uint32, gid uint32, context *
 }
 
 func (node *inMemNode) Truncate(file nodefs.File, size uint64, context *fuse.Context) (code fuse.Status) {
+	node.setSize(int(size))
 	return fuse.OK
 }
 
@@ -312,6 +351,7 @@ var _ nodefs.File = (*inMemFile)(nil)
 
 type inMemFile struct {
 	node *inMemNode
+	flags uint32
 }
 
 func (node *inMemNode) createFile() *inMemFile {
