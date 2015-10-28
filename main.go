@@ -60,6 +60,7 @@ type inMemNode struct {
 	inode *nodefs.Inode
 	metadataMutex sync.RWMutex
 	attr fuse.Attr
+	xattr map[string][]byte
 }
 
 func (node *inMemNode) incrementLinks() {
@@ -217,19 +218,35 @@ func (node *inMemNode) Read(file nodefs.File, dest []byte, off int64, context *f
 }
 
 func (node *inMemNode) Write(file nodefs.File, data []byte, off int64, context *fuse.Context) (written uint32, code fuse.Status) {
-	return 0, fuse.ENOSYS
+	return uint32(len(data)), fuse.OK
 }
 
 func (node *inMemNode) GetXAttr(attribute string, context *fuse.Context) (data []byte, code fuse.Status) {
-	return nil, fuse.ENOSYS
+	node.metadataMutex.RLock()
+	xattr := node.xattr[attribute]
+	node.metadataMutex.RUnlock()
+	if xattr == nil {
+		return nil, fuse.ENODATA
+	}
+	return xattr, fuse.OK
 }
 
 func (node *inMemNode) RemoveXAttr(attr string, context *fuse.Context) fuse.Status {
-	return fuse.ENOSYS
+	node.metadataMutex.Lock()
+	xattr := node.xattr[attr]
+	delete(node.xattr, attr)
+	node.metadataMutex.Unlock()
+	if xattr == nil {
+		return fuse.ENODATA
+	}
+	return fuse.OK
 }
 
 func (node *inMemNode) SetXAttr(attr string, data []byte, flags int, context *fuse.Context) fuse.Status {
-	return fuse.ENOSYS
+	node.metadataMutex.Lock()
+	node.xattr[attr] = data
+	node.metadataMutex.Unlock()
+	return fuse.OK
 }
 
 func (node *inMemNode) ListXAttr(context *fuse.Context) (attrs []string, code fuse.Status) {
@@ -243,16 +260,36 @@ func (node *inMemNode) GetAttr(out *fuse.Attr, file nodefs.File, context *fuse.C
 	return fuse.OK
 }
 
+func setBit(attr *uint32, mask uint32, field uint32) {
+	*attr &= ^mask
+	*attr |= (mask & field)
+}
+
 func (node *inMemNode) Chmod(file nodefs.File, perms uint32, context *fuse.Context) (code fuse.Status) {
-	return fuse.ENOSYS
+	node.metadataMutex.Lock()
+	setBit(&node.attr.Mode, syscall.S_IRUSR, perms)
+	setBit(&node.attr.Mode, syscall.S_IWUSR, perms)
+	setBit(&node.attr.Mode, syscall.S_IXUSR, perms)
+	setBit(&node.attr.Mode, syscall.S_IRGRP, perms)
+	setBit(&node.attr.Mode, syscall.S_IWGRP, perms)
+	setBit(&node.attr.Mode, syscall.S_IXGRP, perms)
+	setBit(&node.attr.Mode, syscall.S_IROTH, perms)
+	setBit(&node.attr.Mode, syscall.S_IWOTH, perms)
+	setBit(&node.attr.Mode, syscall.S_IXOTH, perms)
+	node.metadataMutex.Unlock()
+	return fuse.OK
 }
 
 func (node *inMemNode) Chown(file nodefs.File, uid uint32, gid uint32, context *fuse.Context) (code fuse.Status) {
-	return fuse.ENOSYS
+	node.metadataMutex.Lock()
+	node.attr.Uid = uid
+	node.attr.Gid = gid
+	node.metadataMutex.Unlock()
+	return fuse.OK
 }
 
 func (node *inMemNode) Truncate(file nodefs.File, size uint64, context *fuse.Context) (code fuse.Status) {
-	return fuse.ENOSYS
+	return fuse.OK
 }
 
 func (node *inMemNode) Utimens(file nodefs.File, atime *time.Time, mtime *time.Time, context *fuse.Context) (code fuse.Status) {
