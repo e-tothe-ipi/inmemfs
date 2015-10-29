@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 	"syscall"
+	"runtime"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -113,16 +114,58 @@ func (node *inMemNode) Deletable() bool {
 	return true
 }
 
+const (
+	NODE_SIZE_GC_THRESHOLD = 1 * 1024 * 1024 // 1MB
+)
+
 func (node *inMemNode) OnForget() {
+	runGC := false
+	if len(node.contents) > NODE_SIZE_GC_THRESHOLD {
+		runGC = true
+	}
 	node.setSize(0)
+	if runGC {
+		runtime.GC()
+	}
 }
 
 func (node *inMemNode) Access(mode uint32, context *fuse.Context) (code fuse.Status) {
-	return fuse.ENOSYS
+	if mode == fuse.F_OK {
+		if !getBit(&node.attr.Mode, fuse.S_IFREG){
+			return fuse.EACCES
+		}
+	}
+	if mode & fuse.R_OK > 0 {
+		if !( (node.attr.Uid == context.Uid && getBit(&node.attr.Mode, syscall.S_IRUSR)) ||
+		      (node.attr.Gid == context.Gid && getBit(&node.attr.Mode, syscall.S_IRGRP)) ||
+			  (getBit(&node.attr.Mode, syscall.S_IROTH)) ) {
+			return fuse.EACCES
+		}
+	}
+	if mode & fuse.W_OK > 0 {
+		if !( (node.attr.Uid == context.Uid && getBit(&node.attr.Mode, syscall.S_IWUSR)) ||
+		      (node.attr.Gid == context.Gid && getBit(&node.attr.Mode, syscall.S_IWGRP)) ||
+			  (getBit(&node.attr.Mode, syscall.S_IWOTH)) ) {
+			return fuse.EACCES
+		}
+	}
+	if mode & fuse.X_OK > 0 {
+		if !( (node.attr.Uid == context.Uid && getBit(&node.attr.Mode, syscall.S_IXUSR)) ||
+		      (node.attr.Gid == context.Gid && getBit(&node.attr.Mode, syscall.S_IXGRP)) ||
+			  (getBit(&node.attr.Mode, syscall.S_IXOTH)) ) {
+			return fuse.EACCES
+		}
+	}
+	return fuse.OK
 }
 
 func (node *inMemNode) Readlink(c *fuse.Context) ([]byte, fuse.Status) {
-	return nil, fuse.ENOSYS
+	node.metadataMutex.RLock()
+	if !node.attr.IsSymlink() {
+		return nil, fuse.EINVAL
+	}
+	node.metadataMutex.RUnlock()
+	return node.contents, fuse.OK
 }
 
 func (node *inMemNode) Mknod(name string, mode uint32, dev uint32, context *fuse.Context) (newNode *nodefs.Inode, code fuse.Status) {
@@ -159,8 +202,18 @@ func (node *inMemNode) Rmdir(name string, context *fuse.Context) (code fuse.Stat
 	return node.Unlink(name, context)
 }
 
-func (node *inMemNode) Symlink(name string, content string, context *fuse.Context) (*nodefs.Inode, fuse.Status) {
-	return nil, fuse.ENOSYS
+func (parent *inMemNode) Symlink(name string, content string, context *fuse.Context) (*nodefs.Inode, fuse.Status) {
+	if parent.Inode().GetChild(name) != nil {
+		return nil, fuse.Status(syscall.EEXIST)
+	}
+	node := parent.fs.createNode()
+	node.attr.Mode = 0777 | fuse.S_IFLNK
+	contentBytes := []byte(content)
+	node.setSize(len(contentBytes))
+	copy(node.contents, contentBytes)
+	parent.Inode().NewChild(name, false, node)
+	parent.incrementLinks()
+	return node.Inode(), fuse.OK
 }
 
 func (parent *inMemNode) Rename(oldName string, newParent nodefs.Node, newName string, context *fuse.Context) (code fuse.Status) {
@@ -235,11 +288,15 @@ func (node *inMemNode) Read(file nodefs.File, dest []byte, off int64, context *f
 }
 
 func (node *inMemNode) setSize(size int) {
-	newContents := make([]byte, size)
+	var newContents []byte
 	if len(node.contents) > size {
+		// When shrinking, we want a totally new array so the old one can be released
+		// Common case is truncating to size 0
+		newContents = make([]byte, size)
 		copy(newContents, node.contents[:size])
 	} else {
-		copy(newContents, node.contents)
+		// When expanding, we would like to reuse as much as possible to prevent excess garbage
+		newContents = append(node.contents, make([]byte, size - len(node.contents))...)
 	}
 	node.metadataMutex.Lock()
 	node.contents = newContents
@@ -301,6 +358,10 @@ func (node *inMemNode) GetAttr(out *fuse.Attr, file nodefs.File, context *fuse.C
 func setBit(attr *uint32, mask uint32, field uint32) {
 	*attr &= ^mask
 	*attr |= (mask & field)
+}
+
+func getBit(attr *uint32, mask uint32) bool {
+	return *attr & mask > 0
 }
 
 func (node *inMemNode) Chmod(file nodefs.File, perms uint32, context *fuse.Context) (code fuse.Status) {
@@ -377,11 +438,11 @@ func (f *inMemFile) InnerFile() nodefs.File {
 }
 
 func (f *inMemFile) Read(dest []byte, off int64) (fuse.ReadResult, fuse.Status){
-	return nil, fuse.ENOSYS
+	return f.node.Read(f, dest, off, nil)
 }
 
 func (f *inMemFile) Write(data []byte, off int64) (written uint32, code fuse.Status) {
-	return uint32(len(data)), fuse.OK
+	return f.node.Write(f, data, off, nil)
 }
 
 // Flush is called for close() call on a file descriptor. In
