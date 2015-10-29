@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 	"syscall"
-	"runtime"
+	"runtime/debug"
 
 	"github.com/hanwen/go-fuse/fuse"
 	"github.com/hanwen/go-fuse/fuse/nodefs"
@@ -125,7 +125,9 @@ func (node *inMemNode) OnForget() {
 	}
 	node.setSize(0)
 	if runGC {
-		runtime.GC()
+		go func() {
+			debug.FreeOSMemory()
+		}()
 	}
 }
 
