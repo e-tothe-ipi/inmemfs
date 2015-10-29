@@ -130,33 +130,36 @@ func (node *inMemNode) OnForget() {
 }
 
 func (node *inMemNode) Access(mode uint32, context *fuse.Context) (code fuse.Status) {
+	node.metadataMutex.RLock()
+	code = fuse.OK
 	if mode == fuse.F_OK {
 		if !getBit(&node.attr.Mode, fuse.S_IFREG){
-			return fuse.EACCES
+			code = fuse.EACCES
 		}
 	}
 	if mode & fuse.R_OK > 0 {
 		if !( (node.attr.Uid == context.Uid && getBit(&node.attr.Mode, syscall.S_IRUSR)) ||
 		      (node.attr.Gid == context.Gid && getBit(&node.attr.Mode, syscall.S_IRGRP)) ||
 			  (getBit(&node.attr.Mode, syscall.S_IROTH)) ) {
-			return fuse.EACCES
+			code = fuse.EACCES
 		}
 	}
 	if mode & fuse.W_OK > 0 {
 		if !( (node.attr.Uid == context.Uid && getBit(&node.attr.Mode, syscall.S_IWUSR)) ||
 		      (node.attr.Gid == context.Gid && getBit(&node.attr.Mode, syscall.S_IWGRP)) ||
 			  (getBit(&node.attr.Mode, syscall.S_IWOTH)) ) {
-			return fuse.EACCES
+			code = fuse.EACCES
 		}
 	}
 	if mode & fuse.X_OK > 0 {
 		if !( (node.attr.Uid == context.Uid && getBit(&node.attr.Mode, syscall.S_IXUSR)) ||
 		      (node.attr.Gid == context.Gid && getBit(&node.attr.Mode, syscall.S_IXGRP)) ||
 			  (getBit(&node.attr.Mode, syscall.S_IXOTH)) ) {
-			return fuse.EACCES
+			code = fuse.EACCES
 		}
 	}
-	return fuse.OK
+	node.metadataMutex.RUnlock()
+	return
 }
 
 func (node *inMemNode) Readlink(c *fuse.Context) ([]byte, fuse.Status) {
